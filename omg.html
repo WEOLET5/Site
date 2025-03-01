@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ваш персонаж с эмоциями</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            text-align: center;
+            background-color: #f0f0f0;
+            margin: 0;
+            padding: 20px;
+        }
+
+        .container {
+            display: flex;
+            justify-content: space-around;
+            margin-top: 20px;
+        }
+
+        video, canvas {
+            border: 2px solid #333;
+        }
+
+        .task {
+            margin-top: 20px;
+            font-size: 1.2em;
+        }
+    </style>
+</head>
+<body>
+    <h1>Ваш персонаж</h1>
+    <div class="task" id="task">Задание: <span id="task-text">Поднимите правую руку</span></div>
+    <div class="container">
+        <div>
+            <h3>Скелет</h3>
+            <video id="video" width="320" height="240" autoplay muted></video>
+            <canvas id="skeletonCanvas" width="320" height="240"></canvas>
+        </div>
+        <div>
+            <h3>Персонаж</h3>
+            <canvas id="characterCanvas" width="320" height="240"></canvas>
+        </div>
+    </div>
+
+    <!-- Подключаем MediaPipe Holistic -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/holistic/holistic.js"></script>
+
+    <script>
+        const videoElement = document.getElementById('video');
+        const skeletonCanvas = document.getElementById('skeletonCanvas');
+        const skeletonCtx = skeletonCanvas.getContext('2d');
+        const characterCanvas = document.getElementById('characterCanvas');
+        const characterCtx = characterCanvas.getContext('2d');
+        const taskText = document.getElementById('task-text');
+
+        let currentTask = 0; // Текущее задание
+
+        // Задания
+        const tasks = [
+            "Поднимите правую руку",
+            "Поднимите левую руку",
+            "Присядьте",
+            "Поднимите обе руки",
+            "Поднимите правую ногу",
+            "Поднимите левую ногу",
+            "Помашите правой рукой",
+            "Помашите левой рукой",
+            "Сделайте шаг вправо",
+            "Сделайте шаг влево",
+        ];
+
+        // Инициализация MediaPipe Holistic
+        const holistic = new Holistic({
+            locateFile: (file) => {
+                return `https://cdn.jsdelivr.net/npm/@mediapipe/holistic/${file}`;
+            },
+        });
+
+        holistic.setOptions({
+            modelComplexity: 1,
+            smoothLandmarks: true,
+            enableSegmentation: false,
+            smoothSegmentation: true,
+            refineFaceLandmarks: true,
+            minDetectionConfidence: 0.5,
+            minTrackingConfidence: 0.5,
+        });
+
+        holistic.onResults((results) => {
+            // Отрисовка скелета слева
+            skeletonCtx.save();
+            skeletonCtx.clearRect(0, 0, skeletonCanvas.width, skeletonCanvas.height);
+            skeletonCtx.drawImage(results.image, 0, 0, skeletonCanvas.width, skeletonCanvas.height);
+
+            if (results.poseLandmarks) {
+                drawConnectors(skeletonCtx, results.poseLandmarks, POSE_CONNECTIONS, { color: '#00FF00', lineWidth: 4 });
+                drawLandmarks(skeletonCtx, results.poseLandmarks, { color: '#FF0000', lineWidth: 2 });
+            }
+            if (results.leftHandLandmarks) {
+                drawConnectors(skeletonCtx, results.leftHandLandmarks, HAND_CONNECTIONS, { color: '#00FF00', lineWidth: 4 });
+                drawLandmarks(skeletonCtx, results.leftHandLandmarks, { color: '#FF0000', lineWidth: 2 });
+            }
+            if (results.rightHandLandmarks) {
+                drawConnectors(skeletonCtx, results.rightHandLandmarks, HAND_CONNECTIONS, { color: '#00FF00', lineWidth: 4 });
+                drawLandmarks(skeletonCtx, results.rightHandLandmarks, { color: '#FF0000', lineWidth: 2 });
+            }
+            if (results.faceLandmarks) {
+                drawConnectors(skeletonCtx, results.faceLandmarks, FACEMESH_TESSELATION, { color: '#00FF00', lineWidth: 1 });
+            }
+            skeletonCtx.restore();
+
+            // Отрисовка "реалистичного" персонажа справа
+            drawCharacter(results);
+
+            // Проверка выполнения задания
+            checkTask(results);
+        });
+
+        // Запуск камеры и передача кадров в MediaPipe Holistic
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await holistic.send({ image: videoElement });
+            },
+            width: 320,
+            height: 240,
+        });
+        camera.start();
+
+        // -----------------------------------
+        // Отрисовка персонажа (тело + руки + лицо)
+        // -----------------------------------
+        function drawCharacter(results) {
+            characterCtx.clearRect(0, 0, characterCanvas.width, characterCanvas.height);
+
+            // Рисуем тело (голову, торс, руки, ноги)
+            if (results.poseLandmarks) {
+                drawBody(results.poseLandmarks);
+            }
+
+            // Рисуем глаза (минимально) — если хотим показать движение глаз
+            if (results.faceLandmarks) {
+                drawFace(results.faceLandmarks);
+            }
+
+            // Рисуем руки (пальцы), если есть ключевые точки
+            if (results.leftHandLandmarks) {
+                drawHand(results.leftHandLandmarks);
+            }
+            if (results.rightHandLandmarks) {
+                drawHand(results.rightHandLandmarks);
+            }
+        }
+
+        // -----------------------------------
+        // Рисуем тело (упрощённая реалистичность)
+        // -----------------------------------
+        function drawBody(pose) {
+            const head = pose[0];          // Голова (примерно центр)
+            const leftShoulder = pose[11];
+            const rightShoulder = pose[12];
+            const leftElbow = pose[13];
+            const rightElbow = pose[14];
+            const leftWrist = pose[15];
+            const rightWrist = pose[16];
+            const leftHip = pose[23];
+            const rightHip = pose[24];
+            const leftKnee = pose[25];
+            const rightKnee = pose[26];
+            const leftAnkle = pose[27];
+            const rightAnkle = pose[28];
+
+            // Цвета
+            const skinColor = '#F2D2B6';   // Телесный
+            const shirtColor = '#4E83B6';  // Синий (кофта)
+            const pantsColor = '#777777';  // Серый (штаны)
+
+            // Утилиты для перевода нормированных координат (0..1) в пиксели canvas
+            function cx(lm) { return lm.x * characterCanvas.width; }
+            function cy(lm) { return lm.y * characterCanvas.height; }
+
+            // Голова (круг)
+            characterCtx.beginPath();
+            characterCtx.arc(cx(head), cy(head) - 25, 25, 0, 2 * Math.PI);
+            characterCtx.fillStyle = skinColor;
+            characterCtx.fill();
+
+            // Туловище (простой четырёхугольник: левое плечо -> правое плечо -> правое бедро -> левое бедро)
+            characterCtx.beginPath();
+            characterCtx.moveTo(cx(leftShoulder), cy(leftShoulder));
+            characterCtx.lineTo(cx(rightShoulder), cy(rightShoulder));
+            characterCtx.lineTo(cx(rightHip), cy(rightHip));
+            characterCtx.lineTo(cx(leftHip), cy(leftHip));
+            characterCtx.closePath();
+            characterCtx.fillStyle = shirtColor;
+            characterCtx.fill();
+
+            // Руки (плечо -> локоть -> запястье), толстые линии телесного цвета
+            drawLimb(leftShoulder, leftElbow, leftWrist, skinColor, 10);
+            drawLimb(rightShoulder, rightElbow, rightWrist, skinColor, 10);
+
+            // Ноги (бедро -> колено -> лодыжка), чуть толще, цвет штанов
+            drawLimb(leftHip, leftKnee, leftAnkle, pantsColor, 12);
+            drawLimb(rightHip, rightKnee, rightAnkle, pantsColor, 12);
+
+            // Вспомогательная функция для рисования "ломаной" с закруглёнными краями
+            function drawLimb(start, mid, end, color, width) {
+                characterCtx.beginPath();
+                characterCtx.moveTo(cx(start), cy(start));
+                characterCtx.lineTo(cx(mid), cy(mid));
+                characterCtx.lineTo(cx(end), cy(end));
+                characterCtx.strokeStyle = color;
+                characterCtx.lineWidth = width;
+                characterCtx.lineCap = 'round';
+                characterCtx.lineJoin = 'round';
+                characterCtx.stroke();
+            }
+        }
+
+        // -----------------------------------
+        // Рисуем глаза (минимально, без эмоций)
+        // -----------------------------------
+        function drawFace(faceLandmarks) {
+            // Индексы для MediaPipe Holistic:
+            // Левый глаз = 33, Правый глаз = 263 (примерно)
+            const leftEye = faceLandmarks[33];
+            const rightEye = faceLandmarks[263];
+
+            function cx(lm) { return lm.x * characterCanvas.width; }
+            function cy(lm) { return lm.y * characterCanvas.height; }
+
+            // Глаза (маленькие чёрные кружочки)
+            if (leftEye && rightEye) {
+                characterCtx.beginPath();
+                characterCtx.arc(cx(leftEye), cy(leftEye), 3, 0, 2 * Math.PI);
+                characterCtx.fillStyle = '#000000';
+                characterCtx.fill();
+
+                characterCtx.beginPath();
+                characterCtx.arc(cx(rightEye), cy(rightEye), 3, 0, 2 * Math.PI);
+                characterCtx.fillStyle = '#000000';
+                characterCtx.fill();
+            }
+        }
+
+        // -----------------------------------
+        // Рисуем кисть и пальцы (по ключевым точкам руки)
+        // -----------------------------------
+        function drawHand(handLandmarks) {
+            function cx(lm) { return lm.x * characterCanvas.width; }
+            function cy(lm) { return lm.y * characterCanvas.height; }
+
+            // Толщина и цвет для пальцев/кисти
+            characterCtx.strokeStyle = '#F2D2B6'; 
+            characterCtx.lineWidth = 6;
+            characterCtx.lineCap = 'round';
+            characterCtx.lineJoin = 'round';
+
+            // Связи для пальцев
+            const fingers = [
+                [0, 1, 2, 3, 4],    // большой палец
+                [0, 5, 6, 7, 8],    // указательный
+                [0, 9, 10, 11, 12], // средний
+                [0, 13, 14, 15, 16],// безымянный
+                [0, 17, 18, 19, 20] // мизинец
+            ];
+
+            // Рисуем "ладонь" (условная ломаная по всем точкам)
+            characterCtx.beginPath();
+            characterCtx.moveTo(cx(handLandmarks[0]), cy(handLandmarks[0]));
+            for (let i = 1; i < handLandmarks.length; i++) {
+                characterCtx.lineTo(cx(handLandmarks[i]), cy(handLandmarks[i]));
+            }
+            characterCtx.stroke();
+
+            // Рисуем каждый палец
+            for (let f = 0; f < fingers.length; f++) {
+                characterCtx.beginPath();
+                characterCtx.moveTo(cx(handLandmarks[fingers[f][0]]), cy(handLandmarks[fingers[f][0]]));
+                for (let j = 1; j < fingers[f].length; j++) {
+                    characterCtx.lineTo(cx(handLandmarks[fingers[f][j]]), cy(handLandmarks[fingers[f][j]]));
+                }
+                characterCtx.stroke();
+            }
+        }
+
+        // -----------------------------------
+        // Проверка выполнения заданий
+        // -----------------------------------
+        function checkTask(results) {
+            if (!results.poseLandmarks) return;
+
+            const pose = results.poseLandmarks;
+            const rightShoulder = pose[12];
+            const rightElbow = pose[14];
+            const rightWrist = pose[16];
+            const leftShoulder = pose[11];
+            const leftElbow = pose[13];
+            const leftWrist = pose[15];
+            const rightHip = pose[24];
+            const rightKnee = pose[26];
+            const rightAnkle = pose[28];
+            const leftHip = pose[23];
+            const leftKnee = pose[25];
+            const leftAnkle = pose[27];
+
+            switch (currentTask) {
+                case 0: // Поднять правую руку
+                    if (rightWrist.y < rightElbow.y && rightElbow.y < rightShoulder.y) {
+                        nextTask();
+                    }
+                    break;
+                case 1: // Поднять левую руку
+                    if (leftWrist.y < leftElbow.y && leftElbow.y < leftShoulder.y) {
+                        nextTask();
+                    }
+                    break;
+                case 2: // Присесть
+                    if (rightKnee.y > rightHip.y && leftKnee.y > leftHip.y) {
+                        nextTask();
+                    }
+                    break;
+                case 3: // Поднять обе руки
+                    if (rightWrist.y < rightElbow.y && leftWrist.y < leftElbow.y) {
+                        nextTask();
+                    }
+                    break;
+                case 4: // Поднять правую ногу
+                    if (rightAnkle.y < rightKnee.y) {
+                        nextTask();
+                    }
+                    break;
+                case 5: // Поднять левую ногу
+                    if (leftAnkle.y < leftKnee.y) {
+                        nextTask();
+                    }
+                    break;
+                case 6: // Помахать правой рукой
+                    if (rightWrist.y < rightElbow.y && rightElbow.y < rightShoulder.y) {
+                        nextTask();
+                    }
+                    break;
+                case 7: // Помахать левой рукой
+                    if (leftWrist.y < leftElbow.y && leftElbow.y < leftShoulder.y) {
+                        nextTask();
+                    }
+                    break;
+                case 8: // Шаг вправо
+                    if (rightAnkle.x > leftAnkle.x) {
+                        nextTask();
+                    }
+                    break;
+                case 9: // Шаг влево
+                    if (leftAnkle.x > rightAnkle.x) {
+                        nextTask();
+                    }
+                    break;
+            }
+        }
+
+        function nextTask() {
+            currentTask = (currentTask + 1) % tasks.length;
+            taskText.innerText = tasks[currentTask];
+        }
+    </script>
+</body>
+</html>
